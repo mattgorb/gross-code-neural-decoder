@@ -225,3 +225,32 @@ self-verify its construction.
 - Bravyi et al., High-threshold and low-overhead fault-tolerant quantum memory —
   [arXiv:2308.07915](https://arxiv.org/abs/2308.07915) ·
   [reference code](https://github.com/sbravyi/BivariateBicycleCodes)
+
+## Test sets: in-distribution + OOD
+
+Generate one **100,000-shot** in-distribution test set plus five OOD sets, each varying a
+single axis (so each result is interpretable). 100k shots resolves a logical error rate
+down to ~1e-3 with reasonable precision.
+
+| Set | Tests | Generate |
+|-----|-------|----------|
+| `test_`      | in-distribution (final benchmark) | `python data_gen.py -p 0.005 -n 100000 --out test_` |
+| `ood_p002_`  | lower error rate                  | `python data_gen.py -p 0.002 -n 100000 --out ood_p002_` |
+| `ood_p010_`  | higher error rate                 | `python data_gen.py -p 0.01 -n 100000 --out ood_p010_` |
+| `ood_p020_`  | near/above threshold              | `python data_gen.py -p 0.02 -n 100000 --out ood_p020_` |
+| `ood_r24_`   | more rounds (temporal shift)      | `python data_gen.py --rounds 24 -n 100000 --out ood_r24_` |
+| `ood_circ_`  | circuit-level noise (model shift) | `python data_gen.py --noise circuit -p 0.003 -n 100000 --out ood_circ_` |
+
+Evaluate the trained model on any set (swap the `--data` prefix):
+
+```bash
+python train.py --eval-only --model conv --size paper \
+    --weights gross_conv_paper_best.pth --data ood_p010_
+```
+
+Notes:
+- `ood_r24_` works **zero-shot** — the model pools over the round axis, so different
+  `--rounds` load fine.
+- `ood_circ_` is **2-channel** (X+Z detectors); it only loads if the model was *trained*
+  on circuit-level data. If you trained on phenomenological (1-channel), skip it or
+  retrain on circuit data to compare.
