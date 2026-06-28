@@ -110,7 +110,7 @@ def log_header(**kw):
 
 def train(which, size, epochs, batch_size, lr, val_frac, optimizer, use_ema,
           data_prefix, on_the_fly, p, rounds, steps, val_size, log_csv, out,
-          log_every=200):
+          log_every=200, use_compile=False, log_loss_every=10):
     device = pick_device()
     crit = nn.BCEWithLogitsLoss()
     csv = open(log_csv, "w") if log_csv else None
@@ -145,6 +145,16 @@ def train(which, size, epochs, batch_size, lr, val_frac, optimizer, use_ema,
     if use_ema:
         from optim import EMA
         ema = EMA(model, decay=0.9998)
+
+    # Compile only the training forward; keep `model` (eager) for eval/EMA/saving so
+    # state_dict keys stay clean and the different val batch size doesn't trigger recompiles.
+    train_fwd = model
+    if use_compile:
+        if device.type == "mps":
+            print("torch.compile is unreliable on MPS — running eager (use --compile on CUDA).")
+        else:
+            train_fwd = torch.compile(model)
+            print("torch.compile enabled — the first step compiles and will be slow.")
 
     b_obs, b_ler = baseline(vy)
     n_params = sum(pp.numel() for pp in model.parameters())
@@ -183,10 +193,14 @@ def train(which, size, epochs, batch_size, lr, val_frac, optimizer, use_ema,
             bx_np, by_np = sample_phenomenological_batch(p, rounds, batch_size, rng)
             bx = torch.from_numpy(bx_np).to(device); by = torch.from_numpy(by_np).to(device)
             model.train()
-            loss = crit(model(bx), by)
+            loss = crit(train_fwd(bx), by)
             opt.zero_grad(); loss.backward(); opt.step()
             if ema is not None: ema.update(model)
-            seen += batch_size; run += loss.item() * batch_size; run_n += batch_size
+            lval = loss.item()
+            seen += batch_size; run += lval * batch_size; run_n += batch_size
+            # lightweight per-step loss line (cheap, no val eval); skip on full-checkpoint steps
+            if log_loss_every and step % log_loss_every == 0 and step % log_every != 0:
+                print(f"  step {step:6d}/{steps} | loss {lval:.4f}", flush=True)
             if step % log_every == 0:
                 checkpoint(f"step {step:6d}/{steps}", run / run_n, seen)
                 run = 0.0; run_n = 0
@@ -195,7 +209,7 @@ def train(which, size, epochs, batch_size, lr, val_frac, optimizer, use_ema,
             model.train(); run = 0.0
             for bx, by in train_loader:
                 bx, by = bx.to(device), by.to(device)
-                loss = crit(model(bx), by)
+                loss = crit(train_fwd(bx), by)
                 opt.zero_grad(); loss.backward(); opt.step()
                 if ema is not None: ema.update(model)
                 run += loss.item() * bx.size(0); seen += bx.size(0)
@@ -229,7 +243,10 @@ if __name__ == "__main__":
     ap.add_argument("--rounds", type=int, default=12)
     ap.add_argument("--steps", type=int, default=5000)
     ap.add_argument("--log-every", type=int, default=200, help="on-the-fly: steps between val checkpoints")
+    ap.add_argument("--log-loss-every", type=int, default=10,
+                    help="on-the-fly: steps between lightweight loss prints (0 to disable)")
     ap.add_argument("--val-size", type=int, default=20000)
+    ap.add_argument("--compile", action="store_true", help="torch.compile the training forward (CUDA)")
     # eval-only (OOD testing)
     ap.add_argument("--eval-only", action="store_true")
     ap.add_argument("--weights", default=None, help="weights file to evaluate (eval-only)")
@@ -242,4 +259,5 @@ if __name__ == "__main__":
     else:
         train(args.model, args.size, args.epochs, args.batch_size, args.lr, args.val_frac,
               args.optimizer, args.ema, args.data, args.on_the_fly, args.p, args.rounds,
-              args.steps, args.val_size, args.log_csv, out, args.log_every)
+              args.steps, args.val_size, args.log_csv, out, args.log_every,
+              use_compile=args.compile, log_loss_every=args.log_loss_every)
