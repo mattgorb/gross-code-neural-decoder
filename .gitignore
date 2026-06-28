@@ -1,0 +1,18 @@
+# Datasets (regenerate with data_gen.py — too big for GitHub)
+*.npy
+
+# Trained weights and logs
+*.pth
+*.csv
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.egg-info/
+
+# OS / editor
+.DS_Store
+.vscode/
+.idea/
