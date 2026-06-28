@@ -40,6 +40,9 @@ class TorusBivariateConv(nn.Module):
         self.bias = nn.Parameter(torch.zeros(out_channels))
 
     def forward(self, x):
+        # Accumulate per-tap channel mixes (each einsum is a 1x1 conv = matmul) instead of
+        # materializing a [B,C,R,X,Y,taps] stack. Mathematically identical, far less memory
+        # and much faster on GPU.
         taps = [x]  # self
         for sx, sy in SHIFTS_A:
             taps.append(torch.roll(x, shifts=(sx, sy), dims=(-2, -1)))
@@ -48,8 +51,9 @@ class TorusBivariateConv(nn.Module):
         taps.append(torch.roll(x, shifts=1, dims=-3))   # previous round
         taps.append(torch.roll(x, shifts=-1, dims=-3))  # next round
 
-        stacked = torch.stack(taps, dim=-1)  # [B, C, R, X, Y, taps]
-        out = torch.einsum("bcrxyn,ocn->borxy", stacked, self.weight)
+        out = torch.einsum("bcrxy,oc->borxy", taps[0], self.weight[:, :, 0])
+        for n in range(1, self.num_taps):
+            out = out + torch.einsum("bcrxy,oc->borxy", taps[n], self.weight[:, :, n])
         return out + self.bias.view(1, -1, 1, 1, 1)
 
 
