@@ -182,6 +182,27 @@ def build_circuit(rounds=12, p=0.005):
     return c
 
 
+def _detector_coord_index(circuit):
+    """Per-detector (channel, round, i, j) arrays for scattering a flat detector vector
+    onto the [2, R, L_GRID, M] grid."""
+    n_det = circuit.num_detectors
+    coords = circuit.get_detector_coordinates()
+    ch = np.zeros(n_det, dtype=np.int64)
+    rr = np.zeros(n_det, dtype=np.int64)
+    ii = np.zeros(n_det, dtype=np.int64)
+    jj = np.zeros(n_det, dtype=np.int64)
+    for d, co in coords.items():
+        ch[d], rr[d], ii[d], jj[d] = int(co[0]), int(co[1]), int(co[2]), int(co[3])
+    return ch, rr, ii, jj
+
+
+def _scatter(dets, ch, rr, ii, jj, R):
+    b = dets.shape[0]
+    grid = np.zeros((b, 2, R, L_GRID, M), dtype=np.float32)
+    grid[:, ch, rr, ii, jj] = dets.astype(np.float32)
+    return grid
+
+
 def circuit_to_arrays(rounds=12, p=0.005, num_samples=20000, chunk=20000, seed=0):
     """Sample the circuit-level Gross code and return decoder-ready arrays.
 
@@ -192,31 +213,34 @@ def circuit_to_arrays(rounds=12, p=0.005, num_samples=20000, chunk=20000, seed=0
     """
     circuit = build_circuit(rounds=rounds, p=p)
     R = rounds + 1
-    n_det = circuit.num_detectors
-
-    # Map each detector index -> (channel, round, i, j) from its coordinates.
-    coords = circuit.get_detector_coordinates()
-    ch = np.zeros(n_det, dtype=np.int64)
-    rr = np.zeros(n_det, dtype=np.int64)
-    ii = np.zeros(n_det, dtype=np.int64)
-    jj = np.zeros(n_det, dtype=np.int64)
-    for d, co in coords.items():
-        ch[d], rr[d], ii[d], jj[d] = int(co[0]), int(co[1]), int(co[2]), int(co[3])
-
+    ch, rr, ii, jj = _detector_coord_index(circuit)
     sampler = circuit.compile_detector_sampler(seed=seed)
     syndromes = np.zeros((num_samples, 2, R, L_GRID, M), dtype=np.float32)
     observables = np.zeros((num_samples, 12), dtype=np.float32)
-
     for start in range(0, num_samples, chunk):
         stop = min(start + chunk, num_samples)
-        b = stop - start
-        dets, obs = sampler.sample(shots=b, separate_observables=True)
-        grid = np.zeros((b, 2, R, L_GRID, M), dtype=np.float32)
-        grid[:, ch, rr, ii, jj] = dets.astype(np.float32)   # scatter onto torus
-        syndromes[start:stop] = grid
+        dets, obs = sampler.sample(shots=stop - start, separate_observables=True)
+        syndromes[start:stop] = _scatter(dets, ch, rr, ii, jj, R)
         observables[start:stop] = obs.astype(np.float32)
-
     return syndromes, observables
+
+
+# Cache compiled samplers so on-the-fly streaming doesn't rebuild the circuit each step.
+_STREAM_CACHE = {}
+
+
+def sample_circuit_batch(rounds, p, batch, seed=0):
+    """Stream one fresh circuit-level batch (for on-the-fly training).
+    Returns x [batch, 2, R, L_GRID, M] float32, y [batch, 12] float32."""
+    key = (rounds, p, seed)
+    if key not in _STREAM_CACHE:
+        circuit = build_circuit(rounds=rounds, p=p)
+        ch, rr, ii, jj = _detector_coord_index(circuit)
+        sampler = circuit.compile_detector_sampler(seed=seed)
+        _STREAM_CACHE[key] = (sampler, ch, rr, ii, jj, rounds + 1)
+    sampler, ch, rr, ii, jj, R = _STREAM_CACHE[key]
+    dets, obs = sampler.sample(shots=batch, separate_observables=True)
+    return _scatter(dets, ch, rr, ii, jj, R), obs.astype(np.float32)
 
 
 if __name__ == "__main__":

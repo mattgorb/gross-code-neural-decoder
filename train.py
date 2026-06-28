@@ -110,7 +110,8 @@ def log_header(**kw):
 
 def train(which, size, epochs, batch_size, lr, val_frac, optimizer, use_ema,
           data_prefix, on_the_fly, p, rounds, steps, val_size, log_csv, out,
-          log_every=200, use_compile=False, log_loss_every=10):
+          log_every=200, use_compile=False, log_loss_every=10,
+          noise="phenomenological"):
     device = pick_device()
     crit = nn.BCEWithLogitsLoss()
     csv = open(log_csv, "w") if log_csv else None
@@ -121,14 +122,18 @@ def train(which, size, epochs, batch_size, lr, val_frac, optimizer, use_ema,
     if on_the_fly:
         if data_prefix:                            # fixed val set from disk
             vx, vy = load_disk(data_prefix)
-        else:                                      # generate a fixed val set once
+        elif noise == "circuit":                   # generate a fixed circuit val set once
+            from bb_circuit import circuit_to_arrays
+            sx, sy = circuit_to_arrays(rounds=rounds, p=p, num_samples=val_size, seed=999)
+            vx, vy = torch.from_numpy(sx).float(), torch.from_numpy(sy).float()
+        else:                                      # generate a fixed phenomenological val set
             from data_gen import gen_phenomenological
             sx, sy = gen_phenomenological(p, rounds, val_size, seed=999)
             vx, vy = torch.from_numpy(sx).float(), torch.from_numpy(sy).float()
         in_channels, num_logical = vx.shape[1], vy.shape[1]
         val_loader = DataLoader(TensorDataset(vx, vy), batch_size=512, shuffle=False)
         sample_x = vx
-        data_desc = f"on-the-fly phenomenological (p={p}, rounds={rounds}), val={len(vx)}"
+        data_desc = f"on-the-fly {noise} (p={p}, rounds={rounds}), val={len(vx)}"
     else:
         x, y = load_disk(data_prefix)
         in_channels, num_logical = x.shape[1], y.shape[1]
@@ -190,12 +195,17 @@ def train(which, size, epochs, batch_size, lr, val_frac, optimizer, use_ema,
 
     seen = 0
     if on_the_fly:
-        from data_gen import sample_phenomenological_batch
-        rng = np.random.default_rng(0)
+        if noise == "circuit":
+            from bb_circuit import sample_circuit_batch
+            next_batch = lambda: sample_circuit_batch(rounds, p, batch_size, seed=0)
+        else:
+            from data_gen import sample_phenomenological_batch
+            rng = np.random.default_rng(0)
+            next_batch = lambda: sample_phenomenological_batch(p, rounds, batch_size, rng)
         log_every = min(max(1, log_every), steps)
         run = 0.0; run_n = 0
         for step in range(1, steps + 1):
-            bx_np, by_np = sample_phenomenological_batch(p, rounds, batch_size, rng)
+            bx_np, by_np = next_batch()
             bx = torch.from_numpy(bx_np).to(device); by = torch.from_numpy(by_np).to(device)
             model.train()
             loss = crit(train_fwd(bx), by)
@@ -244,8 +254,10 @@ if __name__ == "__main__":
     ap.add_argument("--data", default="", help="data filename prefix to load")
     ap.add_argument("--out", default=None, help="output weights prefix (default: gross_<model>_<size>)")
     ap.add_argument("--log-csv", default=None, help="optional CSV metrics log path")
-    # on-the-fly streaming (phenomenological)
-    ap.add_argument("--on-the-fly", action="store_true", help="stream fresh phenomenological data")
+    # on-the-fly streaming
+    ap.add_argument("--on-the-fly", action="store_true", help="stream fresh data each step")
+    ap.add_argument("--noise", choices=["phenomenological", "circuit"], default="phenomenological",
+                    help="on-the-fly noise model (circuit = Bravyi depth-7, 2-channel)")
     ap.add_argument("-p", type=float, default=0.005)
     ap.add_argument("--rounds", type=int, default=12)
     ap.add_argument("--steps", type=int, default=5000)
@@ -267,4 +279,4 @@ if __name__ == "__main__":
         train(args.model, args.size, args.epochs, args.batch_size, args.lr, args.val_frac,
               args.optimizer, args.ema, args.data, args.on_the_fly, args.p, args.rounds,
               args.steps, args.val_size, args.log_csv, out, args.log_every,
-              use_compile=args.compile, log_loss_every=args.log_loss_every)
+              use_compile=args.compile, log_loss_every=args.log_loss_every, noise=args.noise)
