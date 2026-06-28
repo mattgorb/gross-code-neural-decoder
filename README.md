@@ -18,9 +18,14 @@ binary cross-entropy, exactly as in the paper.
   (Bravyi et al. depth-7 syndrome-extraction schedule, validated for deterministic
   detectors).
 - ✅ Paper training recipe available (Muon + Lion optimizers, EMA) and three size presets.
-- ⚠️ Scaled down for local hardware. The paper trains H=256/L=14 on ~3×10⁸ examples on
-  GPUs; the `tiny`/`small` presets train on a Mac (MPS). The default noise model is
-  phenomenological (circuit-level is available via a flag).
+- ✅ **Runs on GPU.** Training auto-selects CUDA (NVIDIA), MPS (Apple), or CPU. The
+  `tiny`/`small` presets train on a laptop; the `paper` preset (H=256, L=14) trains on a
+  GPU — see [Running on a GPU](#running-on-a-gpu-cloud-or-remote). The default noise model
+  is phenomenological; circuit-level is one flag away.
+
+The only thing this repo doesn't attempt is the paper's *exact* training budget
+(~3×10⁸ examples); on a single GPU you'll typically run fewer steps, which is enough to
+see the decoder beat baseline and scale with model size.
 
 ## The code, briefly
 
@@ -34,6 +39,47 @@ that better encoding rate is why bivariate-bicycle codes are of practical intere
 ```bash
 pip install -r requirements.txt   # torch, numpy, stim
 ```
+
+On Linux x86, `pip install torch` pulls a CUDA-enabled build by default, so the same
+`requirements.txt` works on a GPU box. The decoder automatically uses the GPU
+(`train.py` selects CUDA → MPS → CPU in that order).
+
+## Running on a GPU (cloud or remote)
+
+Full setup on a fresh Linux GPU instance (e.g. AWS `g4dn.xlarge`, a 16 GB NVIDIA T4):
+
+```bash
+# 0. Confirm the NVIDIA driver/GPU is visible
+nvidia-smi
+
+# 1. Clone and enter
+git clone https://github.com/mattgorb/gross-code-neural-decoder.git
+cd gross-code-neural-decoder
+
+# 2. Environment + dependencies
+python3 -m venv .venv && source .venv/bin/activate
+pip install --upgrade pip
+pip install -r requirements.txt
+
+# 3. Verify PyTorch sees the GPU (should print "cuda: True" and the device name)
+python -c "import torch; print(torch.__version__, 'cuda:', torch.cuda.is_available(), \
+  torch.cuda.get_device_name(0) if torch.cuda.is_available() else '')"
+
+# 4. Train inside tmux so the run survives an SSH disconnect
+tmux new -s train
+python train.py --model conv --size paper --on-the-fly --steps 50000 \
+    --batch-size 256 --optimizer muon-lion --ema --log-csv conv_paper.csv
+# detach: Ctrl-b then d   |   reattach: tmux attach -t train
+```
+
+Notes:
+- **If step 3 prints `cuda: False`**, pip installed the CPU build — reinstall with the
+  CUDA index matching your driver, e.g.
+  `pip install torch --index-url https://download.pytorch.org/whl/cu121`.
+- **VRAM is batch-size bound** for the `paper` model: T4 16 GB fits `--batch-size 128`,
+  a 24 GB card fits ~256. On `CUDA out of memory`, halve the batch size.
+- **AWS Deep Learning AMI**: PyTorch+CUDA is preinstalled in a conda env
+  (`source activate pytorch`); skip the venv and just `pip install stim`.
 
 ## Quickstart
 
@@ -125,9 +171,13 @@ self-verify its construction.
 
 ## Hardware notes
 
-- `tiny` / `small` train on a Mac (MPS) or any GPU.
-- `paper` (1.2M params) wants a GPU. Memory is activation-bound by batch size: ~16 GB
-  (e.g. AWS `g4dn.xlarge`, T4) fits `--batch-size 128`; a 24 GB card fits ~256.
+`train.py` auto-selects the device: **CUDA** (NVIDIA GPU) → **MPS** (Apple Silicon) → CPU.
+
+- `tiny` / `small`: train on a laptop (Mac MPS or CPU) or any GPU.
+- `paper` (1.2M params): run on a GPU — see [Running on a GPU](#running-on-a-gpu-cloud-or-remote).
+  A single mid-range GPU is plenty; the model is small, so memory is **activation-bound by
+  batch size**, not parameter count: ~16 GB (AWS `g4dn.xlarge`, T4) fits `--batch-size 128`,
+  a 24 GB card fits ~256.
 - These are block decoders evaluated for **accuracy**; real-time QPU decoding (µs-scale,
   superconducting) is a separate FPGA/ASIC problem this repo does not address.
 
