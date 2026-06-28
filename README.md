@@ -136,10 +136,37 @@ python train.py --model conv --size paper --on-the-fly --steps 50000 \
 
 Logging shows wall-time, throughput, train/val BCE, per-observable error, and logical
 error rate, with best-weights saving (`<out>_best.pth`) and an optional CSV (`--log-csv`).
+Speed flags: `--compile` (torch.compile the training forward; CUDA only) and a cheap
+per-step `--log-loss-every` (default 10) loss print that does **not** run validation.
 
 **Metrics**: *per-observable error* (fraction of the 12 logits wrong) and *logical error
-rate* (fraction of shots with any of the 12 wrong). The validation set is an
-in-distribution held-out split (`--val-frac`), or a fixed generated set in on-the-fly mode.
+rate* (fraction of shots with any of the 12 wrong).
+
+### Validation frequency
+
+- **On-the-fly mode**: the validation set is run every `--log-every` steps (default 200),
+  over `--val-size` held-out samples (default 20,000). The per-step `--log-loss-every`
+  loss line is cheap and does **not** touch the validation set.
+- **Disk/epoch mode**: validation runs once per epoch over the `--val-frac` split.
+
+The validation set is **in-distribution** (same noise model / `p` / rounds as training).
+For out-of-distribution testing use a separate dataset — see below.
+
+### Training budget (replicating the paper)
+
+The paper converges at **~3×10⁸ training examples**. Steps needed = examples ÷ batch size:
+
+| batch size | steps for ~3×10⁸ examples |
+|------------|---------------------------|
+| 128        | ~2,340,000                |
+| 256        | ~1,170,000                |
+| 3328 (paper) | ~90,000 (≈ the paper's 80k) |
+
+So at `--batch-size 128` you need roughly **2.3M steps** to match the paper's data budget.
+Note `train.py` uses a fixed learning rate (no cosine schedule), so matching the example
+count is not a bit-exact reproduction — in practice, train until the logical-error-rate
+curve in the CSV flattens (usually well before the full budget). Best weights are saved
+continuously, so stopping early loses nothing.
 
 ## Out-of-distribution evaluation
 
