@@ -167,18 +167,23 @@ def train(which, size, epochs, batch_size, lr, val_frac, optimizer, use_ema,
 
     def checkpoint(tag, train_bce, seen):
         nonlocal best_ler
-        eval_model = model
+        # Primary metrics: the RAW model (tracks training; on-the-fly => no overfitting).
+        vloss, per_obs, ler = evaluate(model, val_loader, device, crit)
+        best_state, best_this, ema_str = model.state_dict(), ler, ""
         if ema is not None:
-            eval_model = copy.deepcopy(model); ema.copy_to(eval_model)
-        vloss, per_obs, ler = evaluate(eval_model, val_loader, device, crit)
+            em = copy.deepcopy(model); ema.copy_to(em)
+            e_loss, e_obs, e_ler = evaluate(em, val_loader, device, crit)
+            ema_str = f" | EMA per-obs {e_obs:.4f} LER {e_ler:.4f}"
+            if e_ler < best_this:                     # EMA wins once warmed up
+                best_state, best_this = em.state_dict(), e_ler
         elapsed = time.perf_counter() - t0
         star = ""
-        if ler < best_ler:
-            best_ler = ler; star = " *best"
-            torch.save(eval_model.state_dict(), f"{out}_best.pth")
+        if best_this < best_ler:
+            best_ler = best_this; star = " *best"
+            torch.save(best_state, f"{out}_best.pth")
         rate = seen / elapsed if elapsed > 0 else 0
         print(f"{tag} | {elapsed:6.1f}s {rate/1000:5.1f}k ex/s | train {train_bce:.4f} "
-              f"| val {vloss:.4f} per-obs {per_obs:.4f} LER {ler:.4f} | best {best_ler:.4f}{star}")
+              f"| val {vloss:.4f} per-obs {per_obs:.4f} LER {ler:.4f}{ema_str} | best {best_ler:.4f}{star}")
         if csv:
             csv.write(f"{seen},{elapsed:.2f},{train_bce:.5f},{vloss:.5f},"
                       f"{per_obs:.5f},{ler:.5f},{best_ler:.5f}\n"); csv.flush()
@@ -195,7 +200,7 @@ def train(which, size, epochs, batch_size, lr, val_frac, optimizer, use_ema,
             model.train()
             loss = crit(train_fwd(bx), by)
             opt.zero_grad(); loss.backward(); opt.step()
-            if ema is not None: ema.update(model)
+            if ema is not None: ema.update(model, step)
             lval = loss.item()
             seen += batch_size; run += lval * batch_size; run_n += batch_size
             # lightweight per-step loss line (cheap, no val eval); skip on full-checkpoint steps
@@ -205,13 +210,15 @@ def train(which, size, epochs, batch_size, lr, val_frac, optimizer, use_ema,
                 checkpoint(f"step {step:6d}/{steps}", run / run_n, seen)
                 run = 0.0; run_n = 0
     else:
+        gstep = 0
         for epoch in range(1, epochs + 1):
             model.train(); run = 0.0
             for bx, by in train_loader:
                 bx, by = bx.to(device), by.to(device)
                 loss = crit(train_fwd(bx), by)
                 opt.zero_grad(); loss.backward(); opt.step()
-                if ema is not None: ema.update(model)
+                gstep += 1
+                if ema is not None: ema.update(model, gstep)
                 run += loss.item() * bx.size(0); seen += bx.size(0)
             checkpoint(f"ep {epoch:3d}/{epochs}", run / len(train_loader.dataset), seen)
 

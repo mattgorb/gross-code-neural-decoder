@@ -111,11 +111,16 @@ class EMA:
         self.shadow = {k: v.detach().clone() for k, v in model.state_dict().items()}
 
     @torch.no_grad()
-    def update(self, model):
+    def update(self, model, step=None):
+        # Warmup: early on, use a smaller effective decay so the EMA tracks the model
+        # instead of staying stuck near the random initialization.
+        d = self.decay
+        if step is not None:
+            d = min(d, (1.0 + step) / (10.0 + step))
         for k, v in model.state_dict().items():
             s = self.shadow[k]
             if v.dtype.is_floating_point:
-                s.mul_(self.decay).add_(v.detach(), alpha=1 - self.decay)
+                s.mul_(d).add_(v.detach(), alpha=1 - d)
             else:
                 s.copy_(v)
 
