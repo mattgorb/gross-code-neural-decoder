@@ -109,7 +109,8 @@ def log_header(**kw):
 
 
 def train(which, size, epochs, batch_size, lr, val_frac, optimizer, use_ema,
-          data_prefix, on_the_fly, p, rounds, steps, val_size, log_csv, out):
+          data_prefix, on_the_fly, p, rounds, steps, val_size, log_csv, out,
+          log_every=200):
     device = pick_device()
     crit = nn.BCEWithLogitsLoss()
     csv = open(log_csv, "w") if log_csv else None
@@ -176,7 +177,7 @@ def train(which, size, epochs, batch_size, lr, val_frac, optimizer, use_ema,
     if on_the_fly:
         from data_gen import sample_phenomenological_batch
         rng = np.random.default_rng(0)
-        log_every = max(1, steps // 50)
+        log_every = min(max(1, log_every), steps)
         run = 0.0; run_n = 0
         for step in range(1, steps + 1):
             bx_np, by_np = sample_phenomenological_batch(p, rounds, batch_size, rng)
@@ -227,6 +228,7 @@ if __name__ == "__main__":
     ap.add_argument("-p", type=float, default=0.005)
     ap.add_argument("--rounds", type=int, default=12)
     ap.add_argument("--steps", type=int, default=5000)
+    ap.add_argument("--log-every", type=int, default=200, help="on-the-fly: steps between val checkpoints")
     ap.add_argument("--val-size", type=int, default=20000)
     # eval-only (OOD testing)
     ap.add_argument("--eval-only", action="store_true")
@@ -240,4 +242,4 @@ if __name__ == "__main__":
     else:
         train(args.model, args.size, args.epochs, args.batch_size, args.lr, args.val_frac,
               args.optimizer, args.ema, args.data, args.on_the_fly, args.p, args.rounds,
-              args.steps, args.val_size, args.log_csv, out)
+              args.steps, args.val_size, args.log_csv, out, args.log_every)
