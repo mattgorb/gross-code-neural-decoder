@@ -159,6 +159,8 @@ The paper converges at **~3×10⁸ training examples**. Steps needed = examples 
 | batch size | steps for ~3×10⁸ examples |
 |------------|---------------------------|
 | 128        | ~2,340,000                |
+| 200        | ~1,500,000                |
+| 224        | ~1,340,000                |
 | 256        | ~1,170,000                |
 | 3328 (paper) | ~90,000 (≈ the paper's 80k) |
 
