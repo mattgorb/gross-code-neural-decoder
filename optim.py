@@ -94,6 +94,11 @@ class MuonLion:
         self.muon = Muon(matrix, lr=muon_lr)
         self.lion = Lion(scalar, lr=lion_lr, weight_decay=weight_decay)
 
+    @property
+    def param_groups(self):
+        # references to the sub-optimizers' groups, so setting pg['lr'] drives both
+        return self.muon.param_groups + self.lion.param_groups
+
     def zero_grad(self, set_to_none=True):
         self.muon.zero_grad(set_to_none=set_to_none)
         self.lion.zero_grad(set_to_none=set_to_none)

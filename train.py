@@ -1,5 +1,6 @@
 import argparse
 import copy
+import math
 import time
 import numpy as np
 import torch
@@ -111,7 +112,7 @@ def log_header(**kw):
 def train(which, size, epochs, batch_size, lr, val_frac, optimizer, use_ema,
           data_prefix, on_the_fly, p, rounds, steps, val_size, log_csv, out,
           log_every=200, use_compile=False, log_loss_every=10,
-          noise="phenomenological"):
+          noise="phenomenological", schedule="none", warmup=1000, min_lr_frac=0.1):
     device = pick_device()
     crit = nn.BCEWithLogitsLoss()
     csv = open(log_csv, "w") if log_csv else None
@@ -151,6 +152,25 @@ def train(which, size, epochs, batch_size, lr, val_frac, optimizer, use_ema,
         from optim import EMA
         ema = EMA(model, decay=0.9998)
 
+    # Cosine LR schedule with linear warmup (decays to min_lr_frac of peak).
+    base_lrs = [pg["lr"] for pg in opt.param_groups]
+    total_steps = steps if on_the_fly else epochs * len(train_loader)
+
+    def lr_scale(step):
+        if schedule != "cosine":
+            return 1.0
+        if step < warmup:
+            return step / max(1, warmup)
+        prog = (step - warmup) / max(1, total_steps - warmup)
+        prog = min(1.0, prog)
+        return min_lr_frac + (1 - min_lr_frac) * 0.5 * (1 + math.cos(math.pi * prog))
+
+    def apply_lr(step):
+        s = lr_scale(step)
+        for pg, base in zip(opt.param_groups, base_lrs):
+            pg["lr"] = base * s
+        return s
+
     # Compile only the training forward; keep `model` (eager) for eval/EMA/saving so
     # state_dict keys stay clean and the different val batch size doesn't trigger recompiles.
     train_fwd = model
@@ -187,7 +207,8 @@ def train(which, size, epochs, batch_size, lr, val_frac, optimizer, use_ema,
             best_ler = best_this; star = " *best"
             torch.save(best_state, f"{out}_best.pth")
         rate = seen / elapsed if elapsed > 0 else 0
-        print(f"{tag} | {elapsed:6.1f}s {rate/1000:5.1f}k ex/s | train {train_bce:.4f} "
+        cur_lr = opt.param_groups[0]["lr"]
+        print(f"{tag} | {elapsed:6.1f}s {rate/1000:5.1f}k ex/s | lr {cur_lr:.2e} | train {train_bce:.4f} "
               f"| val {vloss:.4f} per-obs {per_obs:.4f} LER {ler:.4f}{ema_str} | best {best_ler:.4f}{star}")
         if csv:
             csv.write(f"{seen},{elapsed:.2f},{train_bce:.5f},{vloss:.5f},"
@@ -205,6 +226,7 @@ def train(which, size, epochs, batch_size, lr, val_frac, optimizer, use_ema,
         log_every = min(max(1, log_every), steps)
         run = 0.0; run_n = 0
         for step in range(1, steps + 1):
+            apply_lr(step)
             bx_np, by_np = next_batch()
             bx = torch.from_numpy(bx_np).to(device); by = torch.from_numpy(by_np).to(device)
             model.train()
@@ -224,10 +246,11 @@ def train(which, size, epochs, batch_size, lr, val_frac, optimizer, use_ema,
         for epoch in range(1, epochs + 1):
             model.train(); run = 0.0
             for bx, by in train_loader:
+                gstep += 1
+                apply_lr(gstep)
                 bx, by = bx.to(device), by.to(device)
                 loss = crit(train_fwd(bx), by)
                 opt.zero_grad(); loss.backward(); opt.step()
-                gstep += 1
                 if ema is not None: ema.update(model, gstep)
                 run += loss.item() * bx.size(0); seen += bx.size(0)
             checkpoint(f"ep {epoch:3d}/{epochs}", run / len(train_loader.dataset), seen)
@@ -266,6 +289,10 @@ if __name__ == "__main__":
                     help="on-the-fly: steps between lightweight loss prints (0 to disable)")
     ap.add_argument("--val-size", type=int, default=20000)
     ap.add_argument("--compile", action="store_true", help="torch.compile the training forward (CUDA)")
+    ap.add_argument("--schedule", choices=["none", "cosine"], default="none",
+                    help="LR schedule (cosine = warmup then cosine decay to min-lr-frac)")
+    ap.add_argument("--warmup", type=int, default=1000, help="linear warmup steps (cosine)")
+    ap.add_argument("--min-lr-frac", type=float, default=0.1, help="cosine floor as fraction of peak LR")
     # eval-only (OOD testing)
     ap.add_argument("--eval-only", action="store_true")
     ap.add_argument("--weights", default=None, help="weights file to evaluate (eval-only)")
@@ -279,4 +306,5 @@ if __name__ == "__main__":
         train(args.model, args.size, args.epochs, args.batch_size, args.lr, args.val_frac,
               args.optimizer, args.ema, args.data, args.on_the_fly, args.p, args.rounds,
               args.steps, args.val_size, args.log_csv, out, args.log_every,
-              use_compile=args.compile, log_loss_every=args.log_loss_every, noise=args.noise)
+              use_compile=args.compile, log_loss_every=args.log_loss_every, noise=args.noise,
+              schedule=args.schedule, warmup=args.warmup, min_lr_frac=args.min_lr_frac)
